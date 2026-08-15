@@ -60,6 +60,126 @@ function Invoke-Aseprite($exePath, [string[]]$argList) {
     }
 }
 
+# ---------- กล่องเลือกโฟลเดอร์ ----------
+# FolderBrowserDialog ของ .NET Framework เป็นกล่อง tree view รุ่นเก่า
+# ตัวที่หน้าตาเหมือนกล่องเลือกไฟล์คือ IFileDialog ของ Vista+ เปิดโหมด FOS_PICKFOLDERS
+# คอมไพล์ตอนเรียกใช้ครั้งแรกเท่านั้น จะได้ไม่ถ่วงเวลาเปิดโปรแกรม
+$script:folderPickerReady = $false
+
+function Initialize-FolderPicker {
+    if ($script:folderPickerReady) { return }
+    $code = @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class ModernFolderPicker
+{
+    [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellItem
+    {
+        void BindToHandler(IntPtr pbc, [MarshalAs(UnmanagedType.LPStruct)] Guid bhid, [MarshalAs(UnmanagedType.LPStruct)] Guid riid, out IntPtr ppv);
+        void GetParent(out IShellItem ppsi);
+        void GetDisplayName(uint sigdnName, [MarshalAs(UnmanagedType.LPWStr)] out string ppszName);
+        void GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
+        void Compare(IShellItem psi, uint hint, out int piOrder);
+    }
+
+    [ComImport, Guid("42f85136-db7e-439c-85f1-e4075d135fc8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IFileDialog
+    {
+        [PreserveSig] int Show(IntPtr parent);
+        void SetFileTypes(uint cFileTypes, IntPtr rgFilterSpec);
+        void SetFileTypeIndex(uint iFileType);
+        void GetFileTypeIndex(out uint piFileType);
+        void Advise(IntPtr pfde, out uint pdwCookie);
+        void Unadvise(uint dwCookie);
+        void SetOptions(uint fos);
+        void GetOptions(out uint pfos);
+        void SetDefaultFolder(IShellItem psi);
+        void SetFolder(IShellItem psi);
+        void GetFolder(out IShellItem ppsi);
+        void GetCurrentSelection(out IShellItem ppsi);
+        void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+        void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);
+        void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
+        void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
+        void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
+        void GetResult(out IShellItem ppsi);
+        void AddPlace(IShellItem psi, int fdap);
+        void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
+        void Close([MarshalAs(UnmanagedType.Error)] int hr);
+        void SetClientGuid([MarshalAs(UnmanagedType.LPStruct)] Guid guid);
+        void ClearClientData();
+        void SetFilter(IntPtr pFilter);
+    }
+
+    [ComImport, Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]
+    private class FileOpenDialogCoClass { }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    private static extern void SHCreateItemFromParsingName(
+        [MarshalAs(UnmanagedType.LPWStr)] string pszPath,
+        IntPtr pbc,
+        [MarshalAs(UnmanagedType.LPStruct)] Guid riid,
+        [MarshalAs(UnmanagedType.Interface)] out object ppv);
+
+    private const uint FOS_PICKFOLDERS     = 0x00000020;
+    private const uint FOS_FORCEFILESYSTEM = 0x00000040;
+    private const uint FOS_PATHMUSTEXIST   = 0x00000800;
+    private const uint SIGDN_FILESYSPATH   = 0x80058000;
+    private static readonly Guid IID_IShellItem = new Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe");
+
+    public static string Show(IntPtr owner, string initialPath, string title)
+    {
+        IFileDialog dlg = (IFileDialog)new FileOpenDialogCoClass();
+        try
+        {
+            uint opts;
+            dlg.GetOptions(out opts);
+            dlg.SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+            if (!string.IsNullOrEmpty(title)) { dlg.SetTitle(title); }
+
+            if (!string.IsNullOrEmpty(initialPath) && System.IO.Directory.Exists(initialPath))
+            {
+                object item;
+                SHCreateItemFromParsingName(initialPath, IntPtr.Zero, IID_IShellItem, out item);
+                if (item != null) { dlg.SetFolder((IShellItem)item); }
+            }
+
+            if (dlg.Show(owner) != 0) { return null; }   // ผู้ใช้กด Cancel
+
+            IShellItem result;
+            dlg.GetResult(out result);
+            string path;
+            result.GetDisplayName(SIGDN_FILESYSPATH, out path);
+            Marshal.ReleaseComObject(result);
+            return path;
+        }
+        finally
+        {
+            Marshal.ReleaseComObject(dlg);
+        }
+    }
+}
+'@
+    Add-Type -TypeDefinition $code -Language CSharp
+    $script:folderPickerReady = $true
+}
+
+function Select-Folder([string]$initial, [string]$title) {
+    try {
+        Initialize-FolderPicker
+        return [ModernFolderPicker]::Show($form.Handle, $initial, $title)
+    } catch {
+        # เครื่องที่เรียก IFileDialog ไม่ได้ ให้ถอยไปใช้กล่องเดิม
+        $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
+        $fbd.Description = $title
+        if (Test-PathSafe $initial) { $fbd.SelectedPath = $initial }
+        if ($fbd.ShowDialog() -eq "OK") { return $fbd.SelectedPath }
+        return $null
+    }
+}
+
 function Split-Lines([string]$text) {
     if ([string]::IsNullOrWhiteSpace($text)) { return @() }
     return @($text -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
@@ -883,9 +1003,13 @@ $btnFile.Add_Click({
 $btnScan.Add_Click({ Invoke-Scan })
 
 $btnOutFolder.Add_Click({
-    $fbd = New-Object System.Windows.Forms.FolderBrowserDialog
-    if (Test-PathSafe $txtOutFolder.Text.Trim().Trim('"')) { $fbd.SelectedPath = $txtOutFolder.Text.Trim().Trim('"') }
-    if ($fbd.ShowDialog() -eq "OK") { $txtOutFolder.Text = $fbd.SelectedPath }
+    $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+    try {
+        $picked = Select-Folder ($txtOutFolder.Text.Trim().Trim('"')) "เลือกโฟลเดอร์ปลายทาง"
+    } finally {
+        $form.Cursor = [System.Windows.Forms.Cursors]::Default
+    }
+    if ($picked) { $txtOutFolder.Text = $picked }
 })
 
 $btnOpenOut.Add_Click({
