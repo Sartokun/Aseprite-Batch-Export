@@ -104,8 +104,8 @@ $fontSmall   = New-Object System.Drawing.Font("Segoe UI", 8)
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Aseprite Batch Sprite Sheet Exporter"
-$form.ClientSize = New-Object System.Drawing.Size(704, 664)
-$form.MinimumSize = New-Object System.Drawing.Size(680, 640)
+$form.ClientSize = New-Object System.Drawing.Size(704, 700)
+$form.MinimumSize = New-Object System.Drawing.Size(680, 660)
 $form.StartPosition = "CenterScreen"
 $form.Font = $fontUI
 $form.Padding = New-Object System.Windows.Forms.Padding(10, 8, 10, 8)
@@ -242,6 +242,49 @@ $lstPreview.HorizontalScrollbar = $true
 $lstPreview.BorderStyle = "None"
 $tip.SetToolTip($lstPreview, "ดับเบิลคลิกเพื่อเปิดไฟล์ (ถ้ามีอยู่แล้ว)")
 $tabPreview.Controls.Add($lstPreview)
+
+$tabSheet = New-Object System.Windows.Forms.TabPage
+$tabSheet.Text = "Sheet type"
+$tabSheet.UseVisualStyleBackColor = $true
+$tabs.TabPages.Add($tabSheet)
+
+# ภาพจริงที่เรนเดอร์จาก Aseprite
+# ไม่ใช้ Dock=Fill เพราะแท็บที่ยังไม่เคยถูกเปิดจะคำนวณความสูงตั้งแต่ตอนหน้ายังเล็ก
+# แล้วค้างที่ 0 ไม่คำนวณใหม่อีก จึงกำหนดขอบเขตเองใน Update-SheetTabLayout
+$picReal = New-Object System.Windows.Forms.PictureBox
+$picReal.BackColor = [System.Drawing.Color]::White
+$tabSheet.Controls.Add($picReal)
+
+$pnlSheetBar = New-Object System.Windows.Forms.Panel
+$pnlSheetBar.Dock = "Top"
+$pnlSheetBar.Size = New-Object System.Drawing.Size($CW, 30)
+$btnRenderReal = New-Button "เรนเดอร์ตัวอย่างจริง" 4 2 150 25
+$tip.SetToolTip($btnRenderReal, "ให้ Aseprite export คู่แรกที่ติ๊กไว้ออกมาดูของจริง ตาม sheet type ที่เลือก")
+$pnlSheetBar.Controls.Add($btnRenderReal)
+$lblSheetInfo = New-Label "เลือก sheet type จากผังด้านบน แล้วกดปุ่มนี้เพื่อดูภาพจริง" 162 8 500
+$lblSheetInfo.ForeColor = $clrMuted
+$pnlSheetBar.Controls.Add($lblSheetInfo)
+$tabSheet.Controls.Add($pnlSheetBar)
+
+# ผังเปรียบเทียบทั้ง 5 แบบ กดเพื่อเลือกได้เลย
+$pnlSheetTypes = New-Object System.Windows.Forms.Panel
+$pnlSheetTypes.Dock = "Top"
+$pnlSheetTypes.Size = New-Object System.Drawing.Size($CW, 96)
+$sheetThumbs = @()
+$tx = 4
+foreach ($st in @("horizontal","vertical","rows","columns","packed")) {
+    $pb = New-Object System.Windows.Forms.PictureBox
+    $pb.Location = New-Object System.Drawing.Point($tx, 4)
+    $pb.Size = New-Object System.Drawing.Size(120, 88)
+    $pb.Tag = $st
+    $pb.Cursor = [System.Windows.Forms.Cursors]::Hand
+    $tip.SetToolTip($pb, "ใช้ sheet type แบบ $st")
+    $pb.Add_Click({ param($sender, $e) $cmbSheet.SelectedItem = [string]$sender.Tag })
+    $pnlSheetTypes.Controls.Add($pb)
+    $sheetThumbs += $pb
+    $tx += 126
+}
+$tabSheet.Controls.Add($pnlSheetTypes)
 
 $tabLog = New-Object System.Windows.Forms.TabPage
 $tabLog.Text = "Log"
@@ -480,6 +523,244 @@ $lstPreview.Add_DoubleClick({
     if (Test-PathSafe $full) { Start-Process $full }
 })
 
+# ---------- พรีวิว Sheet type ----------
+# ตำแหน่ง [คอลัมน์, แถว] ของแต่ละเฟรมตามวิธีจัดเรียงของ Aseprite
+function Get-FrameLayout([string]$type, [int]$n) {
+    $pos = @()
+    if ($type -eq "vertical") {
+        for ($i = 0; $i -lt $n; $i++) { $pos += ,@(0, $i) }
+        return [PSCustomObject]@{ Pos = $pos; Cols = 1; Rows = $n }
+    }
+    if ($type -eq "horizontal") {
+        for ($i = 0; $i -lt $n; $i++) { $pos += ,@($i, 0) }
+        return [PSCustomObject]@{ Pos = $pos; Cols = $n; Rows = 1 }
+    }
+    if ($type -eq "columns") {
+        $rows = [int][Math]::Ceiling([Math]::Sqrt($n))
+        $cols = [int][Math]::Ceiling($n / [double]$rows)
+        for ($i = 0; $i -lt $n; $i++) { $pos += ,@([int][Math]::Floor($i / $rows), ($i % $rows)) }
+        return [PSCustomObject]@{ Pos = $pos; Cols = $cols; Rows = $rows }
+    }
+    $cols = [int][Math]::Ceiling([Math]::Sqrt($n))
+    $rows = [int][Math]::Ceiling($n / [double]$cols)
+    for ($i = 0; $i -lt $n; $i++) { $pos += ,@(($i % $cols), [int][Math]::Floor($i / $cols)) }
+    return [PSCustomObject]@{ Pos = $pos; Cols = $cols; Rows = $rows }
+}
+
+# packed ขึ้นกับรูปร่างเฟรมจริง วาดเป็นตัวอย่างเฟรมคนละขนาดวางชิดกัน [คอลัมน์,แถว,กว้าง,สูง]
+$packedCells = @(@(0,0,2,2), @(2,0,1,1), @(2,1,1,2), @(0,2,2,1))
+
+function New-SheetThumb([string]$type, [bool]$active) {
+    $w = 120; $h = 88
+    $bmp = New-Object System.Drawing.Bitmap $w, $h
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.Clear([System.Drawing.Color]::White)
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::None
+    $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAlias
+
+    $edge     = if ($active) { $clrAccent } else { [System.Drawing.Color]::FromArgb(205, 205, 205) }
+    $cellFill = if ($active) { [System.Drawing.Color]::FromArgb(198, 228, 199) } else { [System.Drawing.Color]::FromArgb(232, 232, 232) }
+    $cellEdge = if ($active) { $clrAccent } else { [System.Drawing.Color]::FromArgb(170, 170, 170) }
+    $textCol  = if ($active) { $clrAccentHi } else { [System.Drawing.Color]::FromArgb(90, 90, 90) }
+
+    $pen = New-Object System.Drawing.Pen($edge, $(if ($active) { 2 } else { 1 }))
+    $g.DrawRectangle($pen, 1, 1, ($w - 3), ($h - 3))
+
+    $style = if ($active) { [System.Drawing.FontStyle]::Bold } else { [System.Drawing.FontStyle]::Regular }
+    $fTitle = New-Object System.Drawing.Font("Segoe UI", 8, $style)
+    $sf = New-Object System.Drawing.StringFormat
+    $sf.Alignment = [System.Drawing.StringAlignment]::Center
+    $sf.LineAlignment = [System.Drawing.StringAlignment]::Center
+    $brTitle = New-Object System.Drawing.SolidBrush($textCol)
+    $g.DrawString($type, $fTitle, $brTitle, (New-Object System.Drawing.RectangleF(0, 4, $w, 18)), $sf)
+
+    $ax = 10; $ay = 24; $aw = $w - 20; $ah = $h - 32
+    $brCell = New-Object System.Drawing.SolidBrush($cellFill)
+    $penCell = New-Object System.Drawing.Pen($cellEdge, 1)
+    $fNum = New-Object System.Drawing.Font("Segoe UI", 6.5)
+    $brNum = New-Object System.Drawing.SolidBrush($textCol)
+
+    if ($type -eq "packed") {
+        $cell = [int][Math]::Floor([Math]::Min($aw / 3.0, $ah / 3.0))
+        $ox = $ax + [int](($aw - $cell * 3) / 2)
+        $oy = $ay + [int](($ah - $cell * 3) / 2)
+        $i = 1
+        foreach ($c in $packedCells) {
+            $x = $ox + $c[0] * $cell; $y = $oy + $c[1] * $cell
+            $cw = $c[2] * $cell; $ch = $c[3] * $cell
+            $g.FillRectangle($brCell, $x, $y, $cw, $ch)
+            $g.DrawRectangle($penCell, $x, $y, $cw, $ch)
+            $g.DrawString("$i", $fNum, $brNum, (New-Object System.Drawing.RectangleF($x, $y, $cw, $ch)), $sf)
+            $i++
+        }
+    } else {
+        $lay = Get-FrameLayout $type 4
+        $cell = [int][Math]::Floor([Math]::Min($aw / [double]$lay.Cols, $ah / [double]$lay.Rows))
+        if ($cell -lt 6) { $cell = 6 }
+        $ox = $ax + [int](($aw - $cell * $lay.Cols) / 2)
+        $oy = $ay + [int](($ah - $cell * $lay.Rows) / 2)
+        $i = 1
+        foreach ($p in $lay.Pos) {
+            $x = $ox + $p[0] * $cell; $y = $oy + $p[1] * $cell
+            $g.FillRectangle($brCell, $x, $y, ($cell - 2), ($cell - 2))
+            $g.DrawRectangle($penCell, $x, $y, ($cell - 2), ($cell - 2))
+            $g.DrawString("$i", $fNum, $brNum, (New-Object System.Drawing.RectangleF($x, $y, ($cell - 2), ($cell - 2))), $sf)
+            $i++
+        }
+    }
+
+    $g.Dispose()
+    return $bmp
+}
+
+function Update-SheetThumbs {
+    $sel = [string]$cmbSheet.SelectedItem
+    foreach ($pb in $sheetThumbs) {
+        $old = $pb.Image
+        $pb.Image = New-SheetThumb ([string]$pb.Tag) ([string]$pb.Tag -eq $sel)
+        if ($old) { $old.Dispose() }
+    }
+}
+
+# พื้นหลังลายหมากรุกไว้ดูส่วนที่โปร่งใส
+$checkTile = New-Object System.Drawing.Bitmap 16, 16
+$gt = [System.Drawing.Graphics]::FromImage($checkTile)
+$gt.Clear([System.Drawing.Color]::White)
+$brGray = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(236, 236, 236))
+$gt.FillRectangle($brGray, 0, 0, 8, 8)
+$gt.FillRectangle($brGray, 8, 8, 8, 8)
+$gt.Dispose()
+$checkBrush = New-Object System.Drawing.TextureBrush($checkTile)
+
+$script:realBmp = $null
+
+function Update-SheetTabLayout {
+    $top = $pnlSheetTypes.Height + $pnlSheetBar.Height
+    $w = $tabSheet.ClientSize.Width
+    $h = $tabSheet.ClientSize.Height - $top
+    # แท็บที่ยังไม่ถูก layout จริงจะรายงานขนาด default ออกมา อย่าเอาไปย่อคอนโทรล
+    if ($w -lt 100 -or $h -lt 20) { return }
+    if ($picReal.Bounds.Y -ne $top -or $picReal.Width -ne $w -or $picReal.Height -ne $h) {
+        $picReal.SetBounds(0, $top, $w, $h)
+    }
+}
+
+$script:inShowReal = $false
+
+function Show-RealImage {
+    if ($script:inShowReal) { return }   # SetBounds ด้านล่างจะยิง Resize กลับเข้ามาอีกรอบ
+    $script:inShowReal = $true
+    try { Show-RealImageCore } finally { $script:inShowReal = $false }
+}
+
+function Show-RealImageCore {
+    Update-SheetTabLayout
+    $cw = $picReal.ClientSize.Width
+    $ch = $picReal.ClientSize.Height
+    if ($cw -lt 8 -or $ch -lt 8) { return }
+
+    $canvas = New-Object System.Drawing.Bitmap $cw, $ch
+    $g = [System.Drawing.Graphics]::FromImage($canvas)
+    $g.FillRectangle($checkBrush, 0, 0, $cw, $ch)
+
+    if ($null -ne $script:realBmp) {
+        $iw = $script:realBmp.Width; $ih = $script:realBmp.Height
+        $scale = [Math]::Min($cw / [double]$iw, $ch / [double]$ih)
+        if ($scale -gt 1) { $scale = [Math]::Floor($scale) }   # ขยายเป็นจำนวนเต็มเพื่อให้พิกเซลคม
+        $dw = [Math]::Max(1, [int]($iw * $scale))
+        $dh = [Math]::Max(1, [int]($ih * $scale))
+        $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::NearestNeighbor
+        $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::Half
+        $g.DrawImage($script:realBmp, [int](($cw - $dw) / 2), [int](($ch - $dh) / 2), $dw, $dh)
+    }
+
+    $g.Dispose()
+    $old = $picReal.Image
+    $picReal.Image = $canvas
+    if ($old) { $old.Dispose() }
+}
+
+function Clear-RealImage($message) {
+    if ($null -ne $script:realBmp) { $script:realBmp.Dispose(); $script:realBmp = $null }
+    $lblSheetInfo.Text = $message
+    Show-RealImage
+}
+
+function Invoke-SheetRender {
+    $exePath  = $txtExe.Text.Trim().Trim('"')
+    $filePath = $txtFile.Text.Trim().Trim('"')
+    if (-not (Test-PathSafe $exePath) -or -not (Test-PathSafe $filePath)) {
+        [System.Windows.Forms.MessageBox]::Show("ต้องระบุ Aseprite.exe และไฟล์ .aseprite ให้ถูกต้องก่อน", "เรนเดอร์ตัวอย่าง", "OK", "Error")
+        return
+    }
+    $layers = Get-CheckedItems $lstLayers
+    $tags   = Get-CheckedItems $lstTags
+    if ($layers.Count -eq 0 -or $tags.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("ติ๊กเลือก Layer และ Tag อย่างน้อยอย่างละ 1 รายการก่อน", "เรนเดอร์ตัวอย่าง", "OK", "Information")
+        return
+    }
+
+    $layer = $layers[0]
+    $tag   = $tags[0]
+    $type  = [string]$cmbSheet.SelectedItem
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "aseprite_sheet_preview_$PID.png"
+    if (Test-PathSafe $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+
+    $argList = @("-b", "--layer", $layer, "--frame-tag", $tag, $filePath)
+    if ($chkIgnoreEmpty.Checked) { $argList += "--ignore-empty" }
+    $argList += @("--sheet-type", $type, "--sheet", $tmp)
+
+    # ถ้าพื้นที่แสดงผลเตี้ยเกินจะดูอะไรไม่ออก เลื่อน splitter ขึ้นให้เอง
+    if ($picReal.ClientSize.Height -lt 140) {
+        $need = 160 - $picReal.ClientSize.Height
+        $want = [Math]::Max($split.Panel1MinSize, ($split.SplitterDistance - $need))
+        try { $split.SplitterDistance = $want } catch { }
+        Update-SheetTabLayout
+    }
+
+    $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+    $btnRenderReal.Enabled = $false
+    try {
+        $r = Invoke-Aseprite $exePath $argList
+        if (Test-PathSafe $tmp) {
+            # อ่านใส่หน่วยความจำก่อน ไม่งั้นไฟล์จะถูกล็อกจนลบไม่ได้
+            $bytes = [System.IO.File]::ReadAllBytes($tmp)
+            $ms = New-Object System.IO.MemoryStream(,$bytes)
+            if ($null -ne $script:realBmp) { $script:realBmp.Dispose() }
+            $script:realBmp = [System.Drawing.Image]::FromStream($ms)
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+            $lblSheetInfo.Text = "$layer / $tag  —  $type  —  $($script:realBmp.Width) x $($script:realBmp.Height) px"
+            Show-RealImage
+        } else {
+            Clear-RealImage "เรนเดอร์ไม่สำเร็จ (exit code $($r.ExitCode)) ดูรายละเอียดในแท็บ Log"
+            Add-Log "--- Sheet preview: $layer / $tag ---"
+            if (-not [string]::IsNullOrWhiteSpace($r.Out)) { Add-Log $r.Out.TrimEnd() }
+            if (-not [string]::IsNullOrWhiteSpace($r.Err)) { Add-Log $r.Err.TrimEnd() }
+        }
+    } catch {
+        Clear-RealImage "เรนเดอร์ไม่สำเร็จ: $($_.Exception.Message)"
+    } finally {
+        $btnRenderReal.Enabled = $true
+        $form.Cursor = [System.Windows.Forms.Cursors]::Default
+    }
+}
+
+$btnRenderReal.Add_Click({ Invoke-SheetRender })
+$picReal.Add_Resize({ Show-RealImage })
+$tabSheet.Add_Resize({ Update-SheetTabLayout })
+$tabs.Add_SelectedIndexChanged({
+    if ($tabs.SelectedTab -eq $tabSheet) { Update-SheetTabLayout; Show-RealImage }
+})
+$split.Add_SplitterMoved({
+    if ($tabs.SelectedTab -eq $tabSheet) { Update-SheetTabLayout }
+})
+$cmbSheet.Add_SelectedIndexChanged({
+    Update-SheetThumbs
+    if ($null -ne $script:realBmp) {
+        Clear-RealImage "เปลี่ยน sheet type แล้ว กด 'เรนเดอร์ตัวอย่างจริง' เพื่อดูของจริงอีกครั้ง"
+    }
+})
+
 # ---------- Scan ----------
 function Invoke-Scan {
     $exePath  = $txtExe.Text.Trim().Trim('"')
@@ -621,7 +902,10 @@ $btnCancel.Add_Click({
 
 # ---------- ตอนเปิดโปรแกรม ----------
 $form.Add_Shown({
-    try { $split.SplitterDistance = [int]($split.Height * 0.46) } catch { }
+    try { $split.SplitterDistance = [int]($split.Height * 0.44) } catch { }
+    Update-SheetThumbs
+    Update-SheetTabLayout
+    Show-RealImage
 
     if ([string]::IsNullOrWhiteSpace($txtExe.Text)) {
         $found = Find-Aseprite
