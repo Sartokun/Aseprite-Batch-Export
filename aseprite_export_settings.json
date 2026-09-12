@@ -1,0 +1,10 @@
+﻿{
+    "AsepritePath":  "D:\\Game\\SteamLibrary\\steamapps\\common\\Aseprite\\Aseprite.exe",
+    "FilePath":  "D:\\Eve\\Siamassagi\\New2026\\Monster\\2.9.69\\2.9.69\\SPA_VFX_GangsterMonkey_bigbnnexplode.aseprite",
+    "Layers":  "BananaBigBullet_Explosion",
+    "Tags":  "Explosion",
+    "SheetType":  "horizontal",
+    "OutputFolder":  "D:\\Eve\\Siamassagi\\New2026\\Monster\\ReplaceShadow\\Lv3\\Gangster Monkey",
+    "Prefix":  "SPA_VFX_GangsterMonkey__BananaBigBullet",
+    "IgnoreEmpty":  true
+}

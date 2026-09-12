@@ -694,8 +694,8 @@ $btnExport.Add_Click({
 
     :exportLoop foreach ($layer in $layers) {
         foreach ($tag in $tags) {
-            $outFile = Join-Path $outFolder (Get-OutFileName $prefix $layer $tag)
-            $argList = @("-b", "--layer", $layer, "--frame-tag", $tag, $filePath)
+            $outFile = Join-Path $outFolder (Get-OutFileName $prefix $tag)
+            $argList = @("-b", "--frame-tag", $tag, $filePath)
             if ($chkIgnoreEmpty.Checked) { $argList += "--ignore-empty" }
             $argList += @("--sheet-type", $sheetType, "--sheet", $outFile)
 
