@@ -224,8 +224,8 @@ $fontSmall   = New-Object System.Drawing.Font("Segoe UI", 8)
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Aseprite Batch Sprite Sheet Exporter"
-$form.ClientSize = New-Object System.Drawing.Size(704, 700)
-$form.MinimumSize = New-Object System.Drawing.Size(680, 660)
+$form.ClientSize = New-Object System.Drawing.Size(704, 732)
+$form.MinimumSize = New-Object System.Drawing.Size(680, 692)
 $form.StartPosition = "CenterScreen"
 $form.Font = $fontUI
 $form.Padding = New-Object System.Windows.Forms.Padding(10, 8, 10, 8)
@@ -435,7 +435,7 @@ $split.Panel2.Controls.Add($tabs)
 $grpOpt = New-Object System.Windows.Forms.GroupBox
 $grpOpt.Text = " ตั้งค่า Export "
 $grpOpt.Dock = "Bottom"
-$grpOpt.Size = New-Object System.Drawing.Size($CW, 92)
+$grpOpt.Size = New-Object System.Drawing.Size($CW, 124)
 
 $grpOpt.Controls.Add((New-Label "Sheet type:" 12 26 72))
 $cmbSheet = New-Object System.Windows.Forms.ComboBox
@@ -456,24 +456,40 @@ if ($settings -and ($settings.PSObject.Properties.Name -contains "IgnoreEmpty"))
 $tip.SetToolTip($chkIgnoreEmpty, "ส่ง --ignore-empty ให้ Aseprite (ไม่เอาเฟรมที่ว่างเปล่า)")
 $grpOpt.Controls.Add($chkIgnoreEmpty)
 
-$lblPrefix = New-Label "ชื่อนำหน้า:" 416 26 74
-$lblPrefix.Anchor = "Top,Right"
-$grpOpt.Controls.Add($lblPrefix)
-$txtPrefix = New-TextBox 492 23 180
-$txtPrefix.Anchor = "Top,Right"
-$tip.SetToolTip($txtPrefix, "เว้นว่างไว้ = ใช้ชื่อไฟล์ .aseprite")
-if ($settings -and $settings.Prefix) { $txtPrefix.Text = $settings.Prefix }
-$grpOpt.Controls.Add($txtPrefix)
+# รูปแบบชื่อไฟล์ ใส่ตัวแปร {Layers} {Tags} {File} ตรงไหนก็ได้
+$defaultNameTemplate = "{File}_{Layers}_{Tags}"
 
-$grpOpt.Controls.Add((New-Label "โฟลเดอร์ปลายทาง:" 12 58 110))
-$txtOutFolder = New-TextBox 126 55 330
+$grpOpt.Controls.Add((New-Label "รูปแบบชื่อไฟล์:" 12 58 110))
+$txtTemplate = New-TextBox 126 55 330
+$txtTemplate.Anchor = "Top,Left,Right"
+$tip.SetToolTip($txtTemplate, "{Layers} = ชื่อ layer, {Tags} = ชื่อ tag, {File} = ชื่อไฟล์ .aseprite`r`n.png จะต่อท้ายให้เอง  เว้นว่าง = $defaultNameTemplate")
+if ($settings -and $settings.NameTemplate) {
+    $txtTemplate.Text = $settings.NameTemplate
+} elseif ($settings -and $settings.Prefix) {
+    # settings รุ่นเก่าเก็บแค่ prefix แปลงเป็นรูปแบบเดิม <prefix>_<layer>_<tag>
+    $txtTemplate.Text = "$($settings.Prefix)_{Layers}_{Tags}"
+} else {
+    $txtTemplate.Text = $defaultNameTemplate
+}
+$grpOpt.Controls.Add($txtTemplate)
+$btnInsLayer = New-Button "+ {Layers}" 464 54 104
+$btnInsLayer.Anchor = "Top,Right"
+$tip.SetToolTip($btnInsLayer, "แทรกชื่อ layer ตรงตำแหน่งเคอร์เซอร์")
+$grpOpt.Controls.Add($btnInsLayer)
+$btnInsTag = New-Button "+ {Tags}" 576 54 96
+$btnInsTag.Anchor = "Top,Right"
+$tip.SetToolTip($btnInsTag, "แทรกชื่อ tag ตรงตำแหน่งเคอร์เซอร์")
+$grpOpt.Controls.Add($btnInsTag)
+
+$grpOpt.Controls.Add((New-Label "โฟลเดอร์ปลายทาง:" 12 90 110))
+$txtOutFolder = New-TextBox 126 87 330
 $txtOutFolder.Anchor = "Top,Left,Right"
 if ($settings -and $settings.OutputFolder) { $txtOutFolder.Text = $settings.OutputFolder }
 $grpOpt.Controls.Add($txtOutFolder)
-$btnOutFolder = New-Button "Browse..." 464 54 104
+$btnOutFolder = New-Button "Browse..." 464 86 104
 $btnOutFolder.Anchor = "Top,Right"
 $grpOpt.Controls.Add($btnOutFolder)
-$btnOpenOut = New-Button "เปิดโฟลเดอร์" 576 54 96
+$btnOpenOut = New-Button "เปิดโฟลเดอร์" 576 86 96
 $btnOpenOut.Anchor = "Top,Right"
 $grpOpt.Controls.Add($btnOpenOut)
 
@@ -561,25 +577,36 @@ $uiTags.Add.Add_Click({    Add-ManualItem $lstTags "Tag" })
 
 # ---------- พรีวิวชื่อไฟล์ ----------
 # ใช้ร่วมกับตอน export เพื่อให้ชื่อที่พรีวิวตรงกับไฟล์จริงเสมอ
-function Get-EffectivePrefix {
-    $prefix = $txtPrefix.Text.Trim()
-    if ($prefix -eq "") {
-        $fp = $txtFile.Text.Trim().Trim('"')
-        if ($fp -ne "") { $prefix = [System.IO.Path]::GetFileNameWithoutExtension($fp) }
-    }
-    return $prefix
+function Get-NameTemplate {
+    $t = $txtTemplate.Text.Trim()
+    if ($t -eq "") { $t = $defaultNameTemplate }
+    return $t
 }
 
-function Get-OutFileName($prefix, $layer, $tag) {
+# ตัดอักขระที่ใช้ในชื่อไฟล์ไม่ได้ (\ / : * ? " < > |) ออกเป็น _
+$invalidNameChars = '[' + [regex]::Escape(-join [System.IO.Path]::GetInvalidFileNameChars()) + ']'
+
+function Get-OutFileName($template, $layer, $tag) {
+    $fp = $txtFile.Text.Trim().Trim('"')
+    $file = if ($fp -ne "") { [System.IO.Path]::GetFileNameWithoutExtension($fp) } else { "" }
     $tagSafe = ($tag -replace '\s+', '_')
-    return "$($prefix)_$($layer)_$($tagSafe).png"
+
+    # replacement string ของ -replace ตีความ $ เป็นตัวอ้างอิงกลุ่ม ต้อง escape เป็น $$
+    $name = $template
+    $name = $name -ireplace '\{layers?\}', ($layer -replace '\$', '$$$$')
+    $name = $name -ireplace '\{tags?\}',   ($tagSafe -replace '\$', '$$$$')
+    $name = $name -ireplace '\{file\}',    ($file -replace '\$', '$$$$')
+    $name = $name -replace $invalidNameChars, '_'
+
+    if ($name -notmatch '\.png$') { $name += ".png" }
+    return $name
 }
 
 $script:isExporting = $false
 
 function Update-Preview {
     $outFolder = $txtOutFolder.Text.Trim().Trim('"')
-    $prefix    = Get-EffectivePrefix
+    $template  = Get-NameTemplate
     $layers    = Get-CheckedItems $lstLayers
     $tags      = Get-CheckedItems $lstTags
 
@@ -597,7 +624,7 @@ function Update-Preview {
         $count = 0
         foreach ($layer in $layers) {
             foreach ($tag in $tags) {
-                $name = Get-OutFileName $prefix $layer $tag
+                $name = Get-OutFileName $template $layer $tag
                 $note = ""
                 if ($seen.ContainsKey($name)) {
                     $note = "   << ชื่อซ้ำ! จะทับกันเอง"
@@ -632,7 +659,14 @@ function Queue-Preview {
 
 $lstLayers.Add_ItemCheck({ Queue-Preview })
 $lstTags.Add_ItemCheck({ Queue-Preview })
-$txtPrefix.Add_TextChanged({ Queue-Preview })
+$txtTemplate.Add_TextChanged({ Queue-Preview })
+
+function Insert-Placeholder($text) {
+    $txtTemplate.SelectedText = $text
+    $txtTemplate.Focus()
+}
+$btnInsLayer.Add_Click({ Insert-Placeholder "{Layers}" })
+$btnInsTag.Add_Click({   Insert-Placeholder "{Tags}" })
 $txtOutFolder.Add_TextChanged({ Queue-Preview })
 $txtFile.Add_TextChanged({ Queue-Preview })
 
@@ -941,9 +975,6 @@ function Invoke-Scan {
 # ---------- เลือกไฟล์ / ลากมาวาง ----------
 function Set-SourceFile($path) {
     $txtFile.Text = $path
-    if ([string]::IsNullOrWhiteSpace($txtPrefix.Text)) {
-        $txtPrefix.Text = [System.IO.Path]::GetFileNameWithoutExtension($path)
-    }
     if ([string]::IsNullOrWhiteSpace($txtOutFolder.Text)) {
         $txtOutFolder.Text = [System.IO.Path]::GetDirectoryName($path)
     }
@@ -1048,7 +1079,7 @@ $btnExport.Add_Click({
     $exePath   = $txtExe.Text.Trim().Trim('"')
     $filePath  = $txtFile.Text.Trim().Trim('"')
     $outFolder = $txtOutFolder.Text.Trim().Trim('"')
-    $prefix    = Get-EffectivePrefix
+    $template  = Get-NameTemplate
     $sheetType = $cmbSheet.SelectedItem
 
     if (-not (Test-PathSafe $exePath)) {
@@ -1079,7 +1110,7 @@ $btnExport.Add_Click({
         Tags         = ($tags -join ", ")
         SheetType    = $sheetType
         OutputFolder = $outFolder
-        Prefix       = $prefix
+        NameTemplate = $template
         IgnoreEmpty  = $chkIgnoreEmpty.Checked
     })
 
@@ -1102,8 +1133,8 @@ $btnExport.Add_Click({
 
     :exportLoop foreach ($layer in $layers) {
         foreach ($tag in $tags) {
-            $outFile = Join-Path $outFolder (Get-OutFileName $prefix $tag)
-            $argList = @("-b", "--frame-tag", $tag, $filePath)
+            $outFile = Join-Path $outFolder (Get-OutFileName $template $layer $tag)
+            $argList = @("-b", "--layer", $layer, "--frame-tag", $tag, $filePath)
             if ($chkIgnoreEmpty.Checked) { $argList += "--ignore-empty" }
             $argList += @("--sheet-type", $sheetType, "--sheet", $outFile)
 
